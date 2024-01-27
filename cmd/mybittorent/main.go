@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -14,7 +18,7 @@ import (
 // The 'bencode' tag in PieceLength field is due to
 // the fact that Go uses a capitalised version of the key by default,
 // so we need to explicitly tell it to look for 'piece length'.
-type TorrentFile struct {
+type MetaInfo struct {
 	Announce string
 	Info     struct {
 		Length      int
@@ -23,6 +27,19 @@ type TorrentFile struct {
 		Pieces      string
 	}
 }
+
+type TorrentFile struct {
+	metadata MetaInfo
+	infoHash [20]byte
+}
+
+type TrackerResponse struct {
+	Interval int
+	Peers    string
+}
+
+var PEER_ID = "00112233445566778899"
+var CLIENT_PORT = "6881"
 
 // Example:
 // - 5:hello -> hello
@@ -160,37 +177,37 @@ func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, erro
 
 	return decodedDict, totLen + 1, nil // include first 'i' and ending 'e'
 }
-func readTorrentFile(filename string) (TorrentFile, [20]byte, error) {
-	var metadata TorrentFile
+func readTorrentFile(filename string) (TorrentFile, error) {
+	var torrentFile TorrentFile
 	buffer, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Println(err)
-		return metadata, [20]byte{}, err
+		return torrentFile, err
 	}
 	s := string(buffer)
 	decoded, err := decodeBencode(s)
 
 	if err != nil {
 		fmt.Println(err)
-		return metadata, [20]byte{}, err
+		return torrentFile, err
 	}
 	decodedMap := decoded.(map[string]interface{})
 
-	metadata.Announce = decodedMap["announce"].(string)
+	torrentFile.metadata.Announce = decodedMap["announce"].(string)
 	infoMap := decodedMap["info"].(map[string]interface{})
-	metadata.Info.Length = int(infoMap["length"].(int))
-	metadata.Info.Name = infoMap["name"].(string)
-	metadata.Info.PieceLength = int(infoMap["piece length"].(int))
-	metadata.Info.Pieces = infoMap["pieces"].(string)
+	torrentFile.metadata.Info.Length = int(infoMap["length"].(int))
+	torrentFile.metadata.Info.Name = infoMap["name"].(string)
+	torrentFile.metadata.Info.PieceLength = int(infoMap["piece length"].(int))
+	torrentFile.metadata.Info.Pieces = infoMap["pieces"].(string)
 
 	infoMapEncoded, err := encodeBencodeDict(infoMap)
 	if err != nil {
 		fmt.Println(err)
-		return metadata, [20]byte{}, err
+		return torrentFile, err
 	}
-	infoHash := sha1.Sum([]byte(infoMapEncoded))
+	torrentFile.infoHash = sha1.Sum([]byte(infoMapEncoded))
 
-	return metadata, infoHash, nil
+	return torrentFile, nil
 }
 
 func encodeBencodeString(str string) string {
@@ -233,6 +250,61 @@ func printPieceHashes(pieces []byte) {
 	}
 }
 
+func discoverPeers(torrentFile TorrentFile) {
+	params := url.Values{}
+	params.Add("info_hash", string(torrentFile.infoHash[:]))
+	params.Add("peer_id", PEER_ID)
+	params.Add("port", CLIENT_PORT)
+	params.Add("uploaded", "0")
+	params.Add("downloaded", "0")
+	params.Add("left", strconv.Itoa(int(torrentFile.metadata.Info.Length)))
+	params.Add("compact", "1")
+	url := fmt.Sprint(torrentFile.metadata.Announce + "?" + params.Encode())
+
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Printf("Error in get request %v", err)
+	}
+	defer response.Body.Close()
+
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(response.Body)
+	respBytes := buf.String()
+	respString := string(respBytes)
+
+	decoded, err := decodeBencode(respString)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	decodedMap, ok := decoded.(map[string]interface{})
+	if !ok {
+		fmt.Println("Unexpected decoded value type.")
+	}
+
+	interval, ok := decodedMap["interval"].(int)
+	if !ok {
+		fmt.Println("Unexpected type in `interval`")
+	}
+
+	peers, ok := decodedMap["peers"].(string)
+	if !ok {
+		fmt.Println("Unexpected type in `peers`")
+	}
+
+	trackerResp := TrackerResponse{
+		Interval: interval,
+		Peers:    peers,
+	}
+
+	for i := 0; i <= len(trackerResp.Peers)-6; i += 6 {
+		peer := []byte(trackerResp.Peers[i : i+4])
+		port := binary.BigEndian.Uint16([]byte(trackerResp.Peers[i+4 : i+6]))
+		fmt.Printf("%v.%v.%v.%v:%d\n", peer[0], peer[1], peer[2], peer[3], port)
+	}
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -248,18 +320,27 @@ func main() {
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
 	} else if command == "info" {
-		metadata, infoHash, err := readTorrentFile(os.Args[2])
+		torrentFile, err := readTorrentFile(os.Args[2])
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		fmt.Println("Tracker URL:", metadata.Announce)
-		fmt.Println("Length:", metadata.Info.Length)
-		fmt.Printf("Info Hash: %x\n", infoHash)
-		fmt.Println("Piece Length:", metadata.Info.PieceLength)
+		fmt.Println("Tracker URL:", torrentFile.metadata.Announce)
+		fmt.Println("Length:", torrentFile.metadata.Info.Length)
+		fmt.Printf("Info Hash: %x\n", torrentFile.infoHash)
+		fmt.Println("Piece Length:", torrentFile.metadata.Info.PieceLength)
 		fmt.Println("Piece Hashes:")
-		printPieceHashes([]byte(metadata.Info.Pieces))
+		printPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
 
+	} else if command == "peers" {
+		torrentFile, err := readTorrentFile(os.Args[2])
+
+		if err != nil {
+			fmt.Println(err)
+			return
+
+		}
+		discoverPeers(torrentFile)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)

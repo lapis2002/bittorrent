@@ -45,6 +45,7 @@ Strings are encoded as \<length>:\<contents>. For example, the string `"hello"` 
 
 You'll implement a decode command which takes a bencoded value as input and prints the decoded value as JSON.
 
+---
 Here’s how the tester will execute your program:
 
 ```
@@ -75,6 +76,7 @@ Lists are encoded as l<bencoded_elements>e.
 
 For example, `["hello", 52]` would be encoded as `l5:helloi52ee`. Note that there are no separators between the elements.
 
+---
 Here’s how the tester will execute your program:
 
 ```
@@ -91,6 +93,7 @@ A dictionary is encoded as d\<key1>\<value1>...\<keyN>\<valueN>e. \<key1>, \<val
 
 For example, {"hello": 52, "foo":"bar"} would be encoded as: d3:foo3:bar5:helloi52ee (note that the keys were reordered).
 
+---
 Here’s how the tester will execute your program:
 
 ```
@@ -116,6 +119,7 @@ Note: The info dictionary looks slightly different for multi-file torrents. For 
 
 In this stage, we'll focus on extracting the tracker URL and the length of the file (in bytes).
 
+---
 Here’s how the tester will execute your program:
 
 ```
@@ -138,6 +142,7 @@ To calculate the info hash, you'll need to:
 - Bencode the contents of the info dictionary
 - Calculate the SHA-1 hash of this bencoded dictionary
 
+---
 Here’s how the tester will execute your program:
 
 ```
@@ -164,6 +169,7 @@ The [BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003
 
 In this stage, the tester will expect your program to print piece length and a list of piece hashes in hexadecimal format.
 
+---
 Here's how the tester will execute your program:
 ```
 $ ./your_bittorrent.sh info sample.torrent
@@ -179,3 +185,54 @@ e876f67a2a8886e8f36b136726c30fa29703022d
 6e2275e604a0766656736e81ff10b55204ad8d35
 f00d937a0213df1982bc8d097227ad9e909acc17
 ```
+
+# Stage 8: Discover peers
+
+
+Trackers are central servers that maintain information about peers participating in the sharing and downloading of a torrent.
+
+In this stage, you'll make a GET request to a HTTP tracker to discover peers to download the file from.
+### Tracker GET request
+
+You'll need to make a request to the tracker URL you extracted in the previous stage, and include these query params:
+- `info_hash`: the info hash of the torrent
+    - 20 bytes long, will need to be URL encoded
+    - **Note**: this is **NOT** the hexadecimal representation, which is 40 bytes long
+- `peer_id`: a unique identifier for your client
+    - A string of length 20 that you get to pick. You can use something like 00112233445566778899.
+- `port`: the port your client is listening on
+    - You can set this to 6881, you will not have to support this functionality during this challenge.
+- `uploaded`: the total amount uploaded so far
+    - Since your client hasn't uploaded anything yet, you can set this to 0.
+- `downloaded`: the total amount downloaded so far
+    - Since your client hasn't downloaded anything yet, you can set this to 0.
+- `left`: the number of bytes left to download
+    - Since you client hasn't downloaded anything yet, this'll be the total length of the file (you've extracted this value from the torrent file in previous stages)
+- `compact`: whether the peer list should use the compact representation
+    - For the purposes of this challenge, set this to 1.
+    - The compact representation is more commonly used in the wild, the non-compact representation is mostly supported for backward-compatibility.
+
+Read the [BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html#trackers) for more information about these query parameters.
+
+### Tracker response
+
+The tracker's response will be a bencoded dictionary with two keys:
+- `interval`:
+   - An integer, indicating how often your client should make a request to the tracker.
+   - You can ignore this value for the purposes of this challenge.
+- `peers`:
+   - A string, which contains list of peers that your client can connect to.
+   - Each peer is represented using 6 bytes. The first 4 bytes are the peer's IP address and the last 2 bytes are the peer's port number.
+
+---
+Here’s how the tester will execute your program:
+```
+$ ./your_bittorrent.sh peers sample.torrent
+```
+and here’s the output it expects:
+```
+178.62.82.89:51470
+165.232.33.77:51467
+178.62.85.20:51489
+```
+
