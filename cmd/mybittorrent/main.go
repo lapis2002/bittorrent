@@ -16,6 +16,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"unicode"
 )
 
@@ -76,7 +77,6 @@ func decodeBencodeString(bencodedString string) (interface{}, int, error) {
 	}
 
 	lengthStr := bencodedString[:firstColonIndex]
-
 	length, err := strconv.Atoi(lengthStr)
 	if err != nil {
 		return "", 0, err
@@ -167,11 +167,13 @@ func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, erro
 		} else {
 			decodedValue = decoded
 		}
+
 		if decodedKey != "" && decodedValue != "" {
 			decodedDict[decodedKey] = decodedValue
 			decodedKey = ""
 			decodedValue = ""
 		}
+
 		toDecode = toDecode[decodedLen:]
 		totLen += decodedLen
 	}
@@ -208,7 +210,6 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 	}
 
 	torrentFile.infoHash = sha1.Sum([]byte(infoMapEncoded))
-
 	return torrentFile, nil
 }
 
@@ -309,8 +310,6 @@ func discoverPeers(torrentFile TorrentFile) ([]string, error) {
 	for i := 0; i <= len(trackerResp.Peers)-6; i += 6 {
 		peer := []byte(trackerResp.Peers[i : i+4])
 		port := binary.BigEndian.Uint16([]byte(trackerResp.Peers[i+4 : i+6]))
-		fmt.Printf("%v.%v.%v.%v:%d\n", peer[0], peer[1], peer[2], peer[3], port)
-
 		address := net.IPv4(peer[0], peer[1], peer[2], peer[3])
 		peersList = append(peersList, fmt.Sprintf("%s:%d", address, port))
 	}
@@ -350,47 +349,46 @@ func peerHandshake(conn net.Conn, infoHash []byte) (string, error) {
 		return "", err
 	}
 
-	fmt.Printf("Peer ID: %x\n", buffer[len(buffer)-20:])
 	return string(buffer[len(buffer)-20:]), nil
 }
 
-func exchangePerrMessages(torrentFile TorrentFile) (net.Conn, error) {
+func exchangePeerMessages(torrentFile TorrentFile, peerId int) (net.Conn, []string, error) {
 	peers, err := discoverPeers(torrentFile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(peers) == 0 {
-		return nil, errors.New("no peers found")
+		return nil, nil, errors.New("no peers found")
 	}
 
-	conn, err := connectToPeer(peers[0])
+	conn, err := connectToPeer(peers[peerId])
 	if err != nil {
-		return conn, err
+		return conn, nil, err
 	}
 
 	_, err = peerHandshake(conn, torrentFile.infoHash[:])
 	if err != nil {
-		return conn, err
+		return conn, nil, err
 	}
 
 	msg, err := readPeerMessage(conn, Bitfield)
 	if err != nil {
-		return conn, err
+		return conn, nil, err
 	}
 
 	msg = createPeerMessage(Interested)
 	_, err = conn.Write(msg.Bytes())
 	if err != nil {
-		return conn, err
+		return conn, nil, err
 	}
 
 	msg, err = readPeerMessage(conn, Unchoke)
 	if err != nil {
-		return conn, err
+		return conn, nil, err
 	}
 
-	return conn, nil
+	return conn, peers, nil
 }
 
 func downloadPiece(conn net.Conn, torrentFile TorrentFile, pieceIdx int) ([]byte, error) {
@@ -448,20 +446,65 @@ func downloadFile(filename string, outputPath string) error {
 		return err
 	}
 
-	conn, err := exchangePerrMessages(torrentFile)
+	peersList, err := discoverPeers(torrentFile)
 	if err != nil {
 		return err
 	}
 
-	pieceHashes := getPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
-
 	filePieces := make([]byte, 0)
-	for i := range pieceHashes {
-		piece, err := downloadPiece(conn, torrentFile, i)
+
+	var wg sync.WaitGroup
+	numPiece := int64(math.Ceil(float64(torrentFile.metadata.Info.Length) / float64(torrentFile.metadata.Info.PieceLength)))
+	pieceDataList := make([][]byte, numPiece)
+	downloadQueue := make(chan int, numPiece)
+
+	for i := 0; i < int(numPiece); i++ {
+		downloadQueue <- i
+	}
+
+	errChannel := make(chan error, len(peersList))
+	wg.Add(len(peersList))
+
+	// goroutine per peer
+	for peerId := range peersList {
+		go func(peerId int) {
+			defer wg.Done()
+			for len(downloadQueue) != 0 {
+				pieceIdx := <-downloadQueue
+				conn, _, err := exchangePeerMessages(torrentFile, peerId)
+				if err != nil {
+					fmt.Println("%w", err)
+					downloadQueue <- pieceIdx
+					errChannel <- err
+					continue
+				}
+
+				piece, err := downloadPiece(conn, torrentFile, pieceIdx)
+
+				if err != nil {
+					fmt.Println("%w", err)
+					downloadQueue <- pieceIdx
+					errChannel <- err
+					continue
+				}
+				pieceDataList[pieceIdx] = piece
+				fmt.Printf("Piece %d downloaded\n", pieceIdx)
+				conn.Close()
+			}
+		}(peerId)
+	}
+
+	wg.Wait()
+	close(errChannel)
+
+	for err := range errChannel {
 		if err != nil {
 			return err
 		}
-		filePieces = append(filePieces, piece...)
+	}
+
+	for i := 0; i < int(numPiece); i++ {
+		filePieces = append(filePieces, pieceDataList[i]...)
 	}
 
 	// write to file
@@ -473,9 +516,6 @@ func downloadFile(filename string, outputPath string) error {
 }
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	// fmt.Println("Logs from your program will appear here!")
-
 	command := os.Args[1]
 	switch command {
 	case "decode":
@@ -508,25 +548,31 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, err = discoverPeers(torrentFile)
+		peersList, err := discoverPeers(torrentFile)
 		if err != nil {
 			log.Fatal(err)
+		}
+
+		for _, peer := range peersList {
+			fmt.Println(peer)
 		}
 
 	case "handshake":
 		torrentFile, err := readTorrentFile(os.Args[2])
-
 		if err != nil {
 			log.Fatal(err)
-			return
-
 		}
+
 		conn, err := connectToPeer(os.Args[3])
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		peerHandshake(conn, torrentFile.infoHash[:])
+		peer, err := peerHandshake(conn, torrentFile.infoHash[:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Peer ID: %x\n", peer)
 
 	case "download_piece":
 		if len(os.Args) < 5 {
@@ -549,10 +595,11 @@ func main() {
 			log.Fatal(err)
 		}
 
-		conn, err := exchangePerrMessages(torrentFile)
+		conn, _, err := exchangePeerMessages(torrentFile, 0)
 		if err != nil {
 			log.Fatal(err)
 		}
+
 		piece, err := downloadPiece(conn, torrentFile, pieceIdx)
 		if err != nil {
 			log.Fatal(err)
