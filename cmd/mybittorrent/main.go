@@ -354,48 +354,46 @@ func peerHandshake(conn net.Conn, infoHash []byte) (string, error) {
 	return string(buffer[len(buffer)-20:]), nil
 }
 
-func downloadPieces(filename string, outputPath string, pieceIdx int) error {
-	torrentFile, err := readTorrentFile(filename)
-	if err != nil {
-		return err
-	}
-
+func exchangePerrMessages(torrentFile TorrentFile) (net.Conn, error) {
 	peers, err := discoverPeers(torrentFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if len(peers) == 0 {
-		return errors.New("no peers found")
+		return nil, errors.New("no peers found")
 	}
 
 	conn, err := connectToPeer(peers[0])
 	if err != nil {
-		return err
+		return conn, err
 	}
-	defer conn.Close()
 
 	_, err = peerHandshake(conn, torrentFile.infoHash[:])
 	if err != nil {
-		return err
+		return conn, err
 	}
 
 	msg, err := readPeerMessage(conn, Bitfield)
 	if err != nil {
-		return err
+		return conn, err
 	}
 
 	msg = createPeerMessage(Interested)
 	_, err = conn.Write(msg.Bytes())
 	if err != nil {
-		return err
+		return conn, err
 	}
 
 	msg, err = readPeerMessage(conn, Unchoke)
 	if err != nil {
-		return err
+		return conn, err
 	}
 
+	return conn, nil
+}
+
+func downloadPiece(conn net.Conn, torrentFile TorrentFile, pieceIdx int) ([]byte, error) {
 	pieceHashes := getPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
 	pieceHash := pieceHashes[pieceIdx]
 	fmt.Println("Requesting piece", pieceIdx, "with hash", pieceHash)
@@ -411,13 +409,13 @@ func downloadPieces(filename string, outputPath string, pieceIdx int) error {
 		msg := createPeerMessage(Request)
 		msg.setPayload(payload)
 
-		_, err = conn.Write(msg.Bytes())
+		_, err := conn.Write(msg.Bytes())
 		if err != nil {
-			return err
+			return nil, err
 		}
 		msg, err = readPeerMessage(conn, Piece)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if msg.length > 0 {
 			piece = append(piece, msg.payload[8:msg.length]...)
@@ -429,19 +427,55 @@ func downloadPieces(filename string, outputPath string, pieceIdx int) error {
 	h.Write(piece)
 	hsum := hex.EncodeToString(h.Sum(nil))
 	if hsum != pieceHash {
-		return fmt.Errorf("piece hash does not match (%x != %x)", hsum, pieceHash)
+		return nil, fmt.Errorf("piece hash does not match (%x != %x)", hsum, pieceHash)
 	}
 
+	return piece, nil
+}
+
+func writePieceToFile(piece []byte, outputPath string) error {
 	// Write the piece to the output file
-	err = os.WriteFile(outputPath, piece, 0644)
+	err := os.WriteFile(outputPath, piece, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func downloadFile(filename string, outputPath string) error {
+	torrentFile, err := readTorrentFile(filename)
 	if err != nil {
 		return err
 	}
 
+	conn, err := exchangePerrMessages(torrentFile)
+	if err != nil {
+		return err
+	}
+
+	pieceHashes := getPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
+
+	filePieces := make([]byte, 0)
+	for i := range pieceHashes {
+		piece, err := downloadPiece(conn, torrentFile, i)
+		if err != nil {
+			return err
+		}
+		filePieces = append(filePieces, piece...)
+	}
+
+	// write to file
+	err = writePieceToFile(filePieces, outputPath)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 func main() {
+	// You can use print statements as follows for debugging, they'll be visible when running tests.
+	// fmt.Println("Logs from your program will appear here!")
+
 	command := os.Args[1]
 	switch command {
 	case "decode":
@@ -502,7 +536,7 @@ func main() {
 		outputPath := os.Args[3]
 		torrentPath := os.Args[4]
 		pieceStr := os.Args[5]
-		piece, err := strconv.Atoi(pieceStr)
+		pieceIdx, err := strconv.Atoi(pieceStr)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -510,7 +544,33 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		err = downloadPieces(torrentPath, outputPath, piece)
+		torrentFile, err := readTorrentFile(torrentPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		conn, err := exchangePerrMessages(torrentFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		piece, err := downloadPiece(conn, torrentFile, pieceIdx)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = writePieceToFile(piece, outputPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+	case "download":
+		if len(os.Args) < 4 {
+			log.Fatalf("usage: %s %s -o output_path torrent_file\n", os.Args[0], command)
+		}
+		outputPath := os.Args[3]
+		torrentPath := os.Args[4]
+
+		err := downloadFile(torrentPath, outputPath)
 		if err != nil {
 			log.Fatal(err)
 		}
