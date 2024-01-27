@@ -30,7 +30,7 @@ git push origin master
 3. Commit your changes and run `git push origin master` to submit your solution
    to CodeCrafters. Test output will be streamed to your terminal.
 
-# Stage 1
+# Stage 1: Decode bencoded strings
 [Bencode](https://en.wikipedia.org/wiki/Bencode) (pronounced Bee-encode) is a serialization format used in the [BitTorrent protocol](https://www.bittorrent.org/beps/bep_0003.html). It is used in torrent files and in communication between trackers and peers.
 
 Bencode supports four data types:
@@ -41,7 +41,7 @@ Bencode supports four data types:
 
 In this stage, we'll focus on decoding strings.
 
-Strings are encoded as <length>:<contents>. For example, the string "hello" is encoded as "5:hello".
+Strings are encoded as \<length>:\<contents>. For example, the string `"hello"` is encoded as `"5:hello"`.
 
 You'll implement a decode command which takes a bencoded value as input and prints the decoded value as JSON.
 
@@ -52,10 +52,10 @@ $ ./your_bittorrent.sh decode 5:hello
 "hello"
 ```
 
-# Stage 2
+# Stage 2: Decode bencoded integers
 In this stage, you'll extend the decode command to support bencoded integers.
 
-Integers are encoded as i<number>e. For example, 52 is encoded as i52e and -52 is encoded as i-52e.
+Integers are encoded as i\<number>e. For example, `52` is encoded as `i52e` and `-52` is encoded as `i-52e`.
 
 Here's how the tester will execute your program:
 
@@ -65,3 +65,22 @@ $ ./your_bittorrent.sh decode i52e
 ```
 
 If you'd prefer to use a library for this stage, [bencode-go](https://github.com/jackpal/bencode-go) is available for you to use.
+
+# Stage 3: Decoding bencoded lists
+
+
+In this stage, you'll extend the decode command to support bencoded lists.
+
+Lists are encoded as l<bencoded_elements>e.
+
+For example, `["hello", 52]` would be encoded as `l5:helloi52ee`. Note that there are no separators between the elements.
+
+Here’s how the tester will execute your program:
+
+```
+$ ./your_bittorrent.sh decode l5:helloi52ee
+[“hello”,52]
+```
+
+If you'd prefer to use a library for this stage, [bencode-go](https://github.com/jackpal/bencode-go) is available for you to use.
+
