@@ -21,6 +21,9 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 	} else if bencodedString[0] == 'l' {
 		decoded, _, err := decodeBencodeList(bencodedString)
 		return decoded, err
+	} else if bencodedString[0] == 'd' {
+		decoded, _, err := decodeBencodeDict(bencodedString)
+		return decoded, err
 	} else {
 		return "", fmt.Errorf("only strings are supported at the moment")
 	}
@@ -92,6 +95,54 @@ func decodeBencodeList(bencodedString string) ([]interface{}, int, error) {
 	}
 
 	return decodedList, totLen + 1, nil // include first 'i' and ending 'e'
+}
+
+func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, error) {
+	decodedDict := map[string]interface{}{}
+
+	toDecode := bencodedString[1:]
+	totLen := 1
+
+	var decodedKey string
+	var decodedValue interface{} = ""
+
+	for toDecode[0] != 'e' {
+		var decoded interface{}
+		var decodedLen int
+		var err error
+		switch toDecode[0] {
+		case 'i':
+			decoded, decodedLen, err = decodeBencodeInt(toDecode)
+		case 'l':
+			decoded, decodedLen, err = decodeBencodeList(toDecode)
+		case 'd':
+			decoded, decodedLen, err = decodeBencodeDict(toDecode)
+		default:
+			decoded, decodedLen, err = decodeBencodeString(toDecode)
+		}
+
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if decodedKey == "" {
+			decodedKey = decoded.(string)
+		} else {
+			decodedValue = decoded
+		}
+		if decodedKey != "" && decodedValue != "" {
+			decodedDict[decodedKey] = decodedValue
+			decodedKey = ""
+			decodedValue = ""
+		}
+		toDecode = toDecode[decodedLen:]
+		totLen += decodedLen
+	}
+	if len(toDecode) == 0 || toDecode[0] != 'e' {
+		return nil, 0, fmt.Errorf("list not properly terminated with 'e'")
+	}
+
+	return decodedDict, totLen + 1, nil // include first 'i' and ending 'e'
 }
 
 func main() {
