@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -225,6 +226,13 @@ func encodeBencodeDict(infoMap map[string]interface{}) (string, error) {
 	return fmt.Sprintf("d%se", encodedString), nil
 }
 
+func printPieceHashes(pieces []byte) {
+	for i := 0; i < len(pieces); i += 20 {
+		hash := pieces[i : i+20]
+		fmt.Println(hex.EncodeToString(hash))
+	}
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -248,6 +256,9 @@ func main() {
 		fmt.Println("Tracker URL:", metadata.Announce)
 		fmt.Println("Length:", metadata.Info.Length)
 		fmt.Printf("Info Hash: %x\n", infoHash)
+		fmt.Println("Piece Length:", metadata.Info.PieceLength)
+		fmt.Println("Piece Hashes:")
+		printPieceHashes([]byte(metadata.Info.Pieces))
 
 	} else {
 		fmt.Println("Unknown command: " + command)
