@@ -208,7 +208,7 @@ You'll need to make a request to the tracker URL you extracted in the previous s
     - Since your client hasn't downloaded anything yet, you can set this to 0.
 - `left`: the number of bytes left to download
     - Since you client hasn't downloaded anything yet, this'll be the total length of the file (you've extracted this value from the torrent file in previous stages)
-- `compact`: whether the peer list should use the compact representation
+- `compact`: whether the peer list should use the [compact representation](https://www.bittorrent.org/beps/bep_0023.html)
     - For the purposes of this challenge, set this to 1.
     - The compact representation is more commonly used in the wild, the non-compact representation is mostly supported for backward-compatibility.
 
@@ -235,4 +235,34 @@ and here’s the output it expects:
 165.232.33.77:51467
 178.62.85.20:51489
 ```
+
+# Stage 9: Peer handshake
+
+
+In this stage, you’ll establish a TCP connection with a peer and complete a handshake.
+
+The handshake is a message consisting of the following parts as described in the [peer protocol](https://www.bittorrent.org/beps/bep_0003.html#peer-protocol):
+- length of the protocol string (BitTorrent protocol) which is `19` (1 byte)
+- the string `BitTorrent protocol` (19 bytes)
+- eight reserved bytes, which are all set to zero (8 bytes)
+- sha1 infohash (20 bytes) (**NOT** the hexadecimal representation, which is 40 bytes long)
+- peer id (20 bytes) (you can use `00112233445566778899` for this challenge)
+
+After we send a handshake to our peer, we should receive a handshake back in the same format.
+
+Your program should print the hexadecimal representation of the peer id you've received during the handshake.
+
+---
+Here’s how the tester will execute your program:
+```
+$ ./your_bittorrent.sh handshake sample.torrent <peer_ip>:<peer_port>
+```
+and here’s the output it expects:
+```
+Peer ID: 0102030405060708090a0b0c0d0e0f1011121314
+```
+(Exact value will be different as it is randomly generated.)
+
+**Note**: To get a peer IP & port to test this locally, run `./your_bittorrent.sh peers sample.torrent` and pick any peer from the list.
+
 

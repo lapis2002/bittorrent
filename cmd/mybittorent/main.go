@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -181,14 +183,14 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 	var torrentFile TorrentFile
 	buffer, err := os.ReadFile(filename)
 	if err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		return torrentFile, err
 	}
 	s := string(buffer)
 	decoded, err := decodeBencode(s)
 
 	if err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		return torrentFile, err
 	}
 	decodedMap := decoded.(map[string]interface{})
@@ -202,7 +204,7 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 
 	infoMapEncoded, err := encodeBencodeDict(infoMap)
 	if err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		return torrentFile, err
 	}
 	torrentFile.infoHash = sha1.Sum([]byte(infoMapEncoded))
@@ -274,7 +276,7 @@ func discoverPeers(torrentFile TorrentFile) {
 
 	decoded, err := decodeBencode(respString)
 	if err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		return
 	}
 
@@ -305,6 +307,41 @@ func discoverPeers(torrentFile TorrentFile) {
 	}
 }
 
+func peerHandshake(torrentFile TorrentFile, peerAddress string) {
+	conn, err := net.Dial("tcp", peerAddress)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	pstrlen := byte(19)                   // length of the protocol string BitTorrent protocol
+	pstr := []byte("BitTorrent protocol") // the string BitTorrent protocol (19 bytes)
+	reserved := make([]byte, 8)           // Eight zeros
+	handshake := append([]byte{pstrlen}, pstr...)
+	handshake = append(handshake, reserved...)
+	handshake = append(handshake, torrentFile.infoHash[:]...)
+	handshake = append(handshake, []byte(PEER_ID)...)
+
+	// Send Handshake
+	_, err = conn.Write(handshake)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	buffer := make([]byte, len(handshake))
+
+	for {
+		_, err := conn.Read(buffer)
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+		fmt.Printf("Peer ID: %x\n", buffer[len(buffer)-20:])
+		return
+	}
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -313,7 +350,7 @@ func main() {
 
 		decoded, err := decodeBencode(bencodedValue)
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 			return
 		}
 
@@ -322,7 +359,7 @@ func main() {
 	} else if command == "info" {
 		torrentFile, err := readTorrentFile(os.Args[2])
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 			return
 		}
 		fmt.Println("Tracker URL:", torrentFile.metadata.Announce)
@@ -336,11 +373,20 @@ func main() {
 		torrentFile, err := readTorrentFile(os.Args[2])
 
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 			return
 
 		}
 		discoverPeers(torrentFile)
+	} else if command == "handshake" {
+		torrentFile, err := readTorrentFile(os.Args[2])
+
+		if err != nil {
+			log.Fatal(err)
+			return
+
+		}
+		peerHandshake(torrentFile, os.Args[3])
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
