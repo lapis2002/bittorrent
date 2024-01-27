@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"unicode"
 )
@@ -157,19 +159,19 @@ func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, erro
 
 	return decodedDict, totLen + 1, nil // include first 'i' and ending 'e'
 }
-func readTorrentFile(filename string) (TorrentFile, error) {
+func readTorrentFile(filename string) (TorrentFile, [20]byte, error) {
 	var metadata TorrentFile
 	buffer, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Println(err)
-		return metadata, err
+		return metadata, [20]byte{}, err
 	}
 	s := string(buffer)
 	decoded, err := decodeBencode(s)
 
 	if err != nil {
 		fmt.Println(err)
-		return metadata, err
+		return metadata, [20]byte{}, err
 	}
 	decodedMap := decoded.(map[string]interface{})
 
@@ -180,8 +182,49 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 	metadata.Info.PieceLength = int(infoMap["piece length"].(int))
 	metadata.Info.Pieces = infoMap["pieces"].(string)
 
-	return metadata, nil
+	infoMapEncoded, err := encodeBencodeDict(infoMap)
+	if err != nil {
+		fmt.Println(err)
+		return metadata, [20]byte{}, err
+	}
+	infoHash := sha1.Sum([]byte(infoMapEncoded))
+
+	return metadata, infoHash, nil
 }
+
+func encodeBencodeString(str string) string {
+	return fmt.Sprintf("%d:%s", len(str), str)
+}
+
+func encodeBencodeInt(i int) string {
+	return fmt.Sprintf("i%de", i)
+}
+
+func encodeBencodeDict(infoMap map[string]interface{}) (string, error) {
+	var encodedString string
+	keys := make([]string, 0, len(infoMap))
+	for k := range infoMap {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		encodedString += encodeBencodeString(k)
+		switch v := infoMap[k].(type) {
+		case string:
+			{
+				encodedString += encodeBencodeString(v)
+			}
+		case int:
+			{
+				encodedString += encodeBencodeInt(v)
+			}
+		}
+	}
+	return fmt.Sprintf("d%se", encodedString), nil
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -197,13 +240,14 @@ func main() {
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
 	} else if command == "info" {
-		metadata, err := readTorrentFile(os.Args[2])
+		metadata, infoHash, err := readTorrentFile(os.Args[2])
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 		fmt.Println("Tracker URL:", metadata.Announce)
 		fmt.Println("Length:", metadata.Info.Length)
+		fmt.Printf("Info Hash: %x\n", infoHash)
 
 	} else {
 		fmt.Println("Unknown command: " + command)
