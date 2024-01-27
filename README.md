@@ -22,20 +22,15 @@ git add .
 git commit -m "pass 1st stage" # any msg
 git push origin master
 ```
-
-Time to move on to the next stage!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
+## Testing
 
 1. Ensure you have `go (1.19)` installed locally
-1. Run `./your_bittorrent.sh` to run your program, which is implemented in
+2. Run `./your_bittorrent.sh` to run your program, which is implemented in
    `cmd/mybittorrent/main.go`.
-1. Commit your changes and run `git push origin master` to submit your solution
+3. Commit your changes and run `git push origin master` to submit your solution
    to CodeCrafters. Test output will be streamed to your terminal.
 
-# Stage 2
+# Stage 1
 [Bencode](https://en.wikipedia.org/wiki/Bencode) (pronounced Bee-encode) is a serialization format used in the [BitTorrent protocol](https://www.bittorrent.org/beps/bep_0003.html). It is used in torrent files and in communication between trackers and peers.
 
 Bencode supports four data types:
@@ -56,3 +51,17 @@ Here’s how the tester will execute your program:
 $ ./your_bittorrent.sh decode 5:hello
 "hello"
 ```
+
+# Stage 2
+In this stage, you'll extend the decode command to support bencoded integers.
+
+Integers are encoded as i<number>e. For example, 52 is encoded as i52e and -52 is encoded as i-52e.
+
+Here's how the tester will execute your program:
+
+```
+$ ./your_bittorrent.sh decode i52e
+52
+```
+
+If you'd prefer to use a library for this stage, [bencode-go](https://github.com/jackpal/bencode-go) is available for you to use.
