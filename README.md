@@ -98,3 +98,32 @@ $ ./your_bittorrent.sh decode d3:foo3:bar5:helloi52ee
 {"foo":"bar","hello":52}
 ```
 If you'd prefer to use a library for this stage, [bencode-go](https://github.com/jackpal/bencode-go) is available for you to use.
+
+# Stage 5: Parse torrent file
+In this stage, you'll parse a torrent file and print information about the torrent.
+
+A torrent file (also known as a metainfo file) contains a bencoded dictionary with the following keys and values:
+- `announce`:
+    - URL to a "tracker", which is a central server that keeps track of peers participating in the sharing of a torrent.
+- `info`:
+    - A dictionary with keys:
+        - `length`: size of the file in bytes, for single-file torrents
+        - `name`: suggested name to save the file / directory as
+        - `piece length`: number of bytes in each piece
+        - `pieces`: concatenated SHA-1 hashes of each piece
+
+Note: The info dictionary looks slightly different for multi-file torrents. For this challenge, we'll only implement support for single-file torrents.
+
+In this stage, we'll focus on extracting the tracker URL and the length of the file (in bytes).
+
+Here’s how the tester will execute your program:
+
+```
+$ ./your_bittorrent.sh info sample.torrent
+```
+and here’s the output it expects:
+
+```
+Tracker URL: http://bittorrent-test-tracker.codecrafters.io/announce
+Length: 92063
+```

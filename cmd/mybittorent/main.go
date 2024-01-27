@@ -8,6 +8,19 @@ import (
 	"unicode"
 )
 
+// The 'bencode' tag in PieceLength field is due to
+// the fact that Go uses a capitalised version of the key by default,
+// so we need to explicitly tell it to look for 'piece length'.
+type TorrentFile struct {
+	Announce string
+	Info     struct {
+		Length      int
+		Name        string
+		PieceLength int `bencode:"piece length"`
+		Pieces      string
+	}
+}
+
 // Example:
 // - 5:hello -> hello
 // - 10:hello12345 -> hello12345
@@ -144,9 +157,34 @@ func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, erro
 
 	return decodedDict, totLen + 1, nil // include first 'i' and ending 'e'
 }
+func readTorrentFile(filename string) (TorrentFile, error) {
+	var metadata TorrentFile
+	buffer, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Println(err)
+		return metadata, err
+	}
+	s := string(buffer)
+	decoded, err := decodeBencode(s)
 
+	if err != nil {
+		fmt.Println(err)
+		return metadata, err
+	}
+	decodedMap := decoded.(map[string]interface{})
+
+	metadata.Announce = decodedMap["announce"].(string)
+	infoMap := decodedMap["info"].(map[string]interface{})
+	metadata.Info.Length = int(infoMap["length"].(int))
+	metadata.Info.Name = infoMap["name"].(string)
+	metadata.Info.PieceLength = int(infoMap["piece length"].(int))
+	metadata.Info.Pieces = infoMap["pieces"].(string)
+
+	return metadata, nil
+}
 func main() {
 	command := os.Args[1]
+
 	if command == "decode" {
 		bencodedValue := os.Args[2]
 
@@ -158,6 +196,15 @@ func main() {
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
+	} else if command == "info" {
+		metadata, err := readTorrentFile(os.Args[2])
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println("Tracker URL:", metadata.Announce)
+		fmt.Println("Length:", metadata.Info.Length)
+
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
