@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,8 +42,8 @@ type TrackerResponse struct {
 	Peers    string
 }
 
-var PEER_ID = "00112233445566778899"
-var CLIENT_PORT = "6881"
+const PEER_ID = "00112233445566778899"
+const CLIENT_PORT = "6881"
 
 // Example:
 // - 5:hello -> hello
@@ -183,14 +185,12 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 	var torrentFile TorrentFile
 	buffer, err := os.ReadFile(filename)
 	if err != nil {
-		log.Fatal(err)
 		return torrentFile, err
 	}
 	s := string(buffer)
 	decoded, err := decodeBencode(s)
 
 	if err != nil {
-		log.Fatal(err)
 		return torrentFile, err
 	}
 	decodedMap := decoded.(map[string]interface{})
@@ -204,9 +204,9 @@ func readTorrentFile(filename string) (TorrentFile, error) {
 
 	infoMapEncoded, err := encodeBencodeDict(infoMap)
 	if err != nil {
-		log.Fatal(err)
 		return torrentFile, err
 	}
+
 	torrentFile.infoHash = sha1.Sum([]byte(infoMapEncoded))
 
 	return torrentFile, nil
@@ -245,14 +245,18 @@ func encodeBencodeDict(infoMap map[string]interface{}) (string, error) {
 	return fmt.Sprintf("d%se", encodedString), nil
 }
 
-func printPieceHashes(pieces []byte) {
+func getPieceHashes(pieces []byte) []string {
+	var pieceHashes []string
 	for i := 0; i < len(pieces); i += 20 {
 		hash := pieces[i : i+20]
-		fmt.Println(hex.EncodeToString(hash))
+		pieceHash := hex.EncodeToString(hash)
+		pieceHashes = append(pieceHashes, pieceHash)
 	}
+
+	return pieceHashes
 }
 
-func discoverPeers(torrentFile TorrentFile) {
+func discoverPeers(torrentFile TorrentFile) ([]string, error) {
 	params := url.Values{}
 	params.Add("info_hash", string(torrentFile.infoHash[:]))
 	params.Add("peer_id", PEER_ID)
@@ -266,6 +270,7 @@ func discoverPeers(torrentFile TorrentFile) {
 	response, err := http.Get(url)
 	if err != nil {
 		fmt.Printf("Error in get request %v", err)
+		return nil, err
 	}
 	defer response.Body.Close()
 
@@ -276,100 +281,205 @@ func discoverPeers(torrentFile TorrentFile) {
 
 	decoded, err := decodeBencode(respString)
 	if err != nil {
-		log.Fatal(err)
-		return
+		return nil, err
 	}
 
 	decodedMap, ok := decoded.(map[string]interface{})
 	if !ok {
-		fmt.Println("Unexpected decoded value type.")
+		return nil, fmt.Errorf("unexpected decoded value type")
 	}
 
 	interval, ok := decodedMap["interval"].(int)
 	if !ok {
-		fmt.Println("Unexpected type in `interval`")
+		return nil, fmt.Errorf("unexpected type in `interval`")
 	}
 
 	peers, ok := decodedMap["peers"].(string)
 	if !ok {
 		fmt.Println("Unexpected type in `peers`")
+		return nil, fmt.Errorf("unexpected type in `peers`")
 	}
 
 	trackerResp := TrackerResponse{
 		Interval: interval,
 		Peers:    peers,
 	}
+	var peersList []string
 
 	for i := 0; i <= len(trackerResp.Peers)-6; i += 6 {
 		peer := []byte(trackerResp.Peers[i : i+4])
 		port := binary.BigEndian.Uint16([]byte(trackerResp.Peers[i+4 : i+6]))
 		fmt.Printf("%v.%v.%v.%v:%d\n", peer[0], peer[1], peer[2], peer[3], port)
+
+		address := net.IPv4(peer[0], peer[1], peer[2], peer[3])
+		peersList = append(peersList, fmt.Sprintf("%s:%d", address, port))
 	}
+
+	return peersList, nil
 }
 
-func peerHandshake(torrentFile TorrentFile, peerAddress string) {
+func connectToPeer(peerAddress string) (net.Conn, error) {
 	conn, err := net.Dial("tcp", peerAddress)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	defer conn.Close()
 
+	// defer used to schedule a function call to be executed when the surrounding function returns.
+	// defer conn.Close() is used to defer the execution of the Close() method on the conn object
+	// defer conn.Close()
+	return conn, nil
+}
+
+func peerHandshake(conn net.Conn, infoHash []byte) (string, error) {
 	pstrlen := byte(19)                   // length of the protocol string BitTorrent protocol
 	pstr := []byte("BitTorrent protocol") // the string BitTorrent protocol (19 bytes)
 	reserved := make([]byte, 8)           // Eight zeros
 	handshake := append([]byte{pstrlen}, pstr...)
 	handshake = append(handshake, reserved...)
-	handshake = append(handshake, torrentFile.infoHash[:]...)
+	handshake = append(handshake, infoHash...)
 	handshake = append(handshake, []byte(PEER_ID)...)
-
 	// Send Handshake
-	_, err = conn.Write(handshake)
-
+	_, err := conn.Write(handshake)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 
 	buffer := make([]byte, len(handshake))
-
-	for {
-		_, err := conn.Read(buffer)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-		fmt.Printf("Peer ID: %x\n", buffer[len(buffer)-20:])
-		return
+	_, err = conn.Read(buffer)
+	if err != nil {
+		return "", err
 	}
+
+	fmt.Printf("Peer ID: %x\n", buffer[len(buffer)-20:])
+	return string(buffer[len(buffer)-20:]), nil
+}
+
+func downloadPieces(filename string, outputPath string, pieceIdx int) error {
+	torrentFile, err := readTorrentFile(filename)
+	if err != nil {
+		return err
+	}
+
+	peers, err := discoverPeers(torrentFile)
+	if err != nil {
+		return err
+	}
+
+	if len(peers) == 0 {
+		return errors.New("no peers found")
+	}
+
+	conn, err := connectToPeer(peers[0])
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	_, err = peerHandshake(conn, torrentFile.infoHash[:])
+	if err != nil {
+		return err
+	}
+
+	msg, err := readPeerMessage(conn, Bitfield)
+	if err != nil {
+		return err
+	}
+
+	msg = createPeerMessage(Interested)
+	_, err = conn.Write(msg.Bytes())
+	if err != nil {
+		return err
+	}
+
+	msg, err = readPeerMessage(conn, Unchoke)
+	if err != nil {
+		return err
+	}
+
+	pieceHashes := getPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
+	pieceHash := pieceHashes[pieceIdx]
+	fmt.Println("Requesting piece", pieceIdx, "with hash", pieceHash)
+
+	maxlen := torrentFile.metadata.Info.Length - pieceIdx*torrentFile.metadata.Info.PieceLength
+	blockSize := 1 << 14 // 2^14
+
+	var piece []byte
+	for i := 0; i < torrentFile.metadata.Info.PieceLength; i += blockSize {
+		length := math.Min(float64(maxlen-i), float64(blockSize))
+		payload := createPayload(uint32(pieceIdx), uint32(i), uint32(length))
+
+		msg := createPeerMessage(Request)
+		msg.setPayload(payload)
+
+		_, err = conn.Write(msg.Bytes())
+		if err != nil {
+			return err
+		}
+		msg, err = readPeerMessage(conn, Piece)
+		if err != nil {
+			return err
+		}
+		if msg.length > 0 {
+			piece = append(piece, msg.payload[8:msg.length]...)
+		}
+	}
+
+	// Verify the piece hash
+	h := sha1.New()
+	h.Write(piece)
+	hsum := hex.EncodeToString(h.Sum(nil))
+	if hsum != pieceHash {
+		return fmt.Errorf("piece hash does not match (%x != %x)", hsum, pieceHash)
+	}
+
+	// Write the piece to the output file
+	err = os.WriteFile(outputPath, piece, 0644)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
 	command := os.Args[1]
-
-	if command == "decode" {
+	switch command {
+	case "decode":
 		bencodedValue := os.Args[2]
-
 		decoded, err := decodeBencode(bencodedValue)
 		if err != nil {
 			log.Fatal(err)
-			return
 		}
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
-	} else if command == "info" {
+
+	case "info":
 		torrentFile, err := readTorrentFile(os.Args[2])
 		if err != nil {
 			log.Fatal(err)
-			return
 		}
 		fmt.Println("Tracker URL:", torrentFile.metadata.Announce)
 		fmt.Println("Length:", torrentFile.metadata.Info.Length)
 		fmt.Printf("Info Hash: %x\n", torrentFile.infoHash)
 		fmt.Println("Piece Length:", torrentFile.metadata.Info.PieceLength)
 		fmt.Println("Piece Hashes:")
-		printPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
+		pieceHashes := getPieceHashes([]byte(torrentFile.metadata.Info.Pieces))
+		for _, pieceHash := range pieceHashes {
+			fmt.Println(pieceHash)
+		}
 
-	} else if command == "peers" {
+	case "peers":
+		torrentFile, err := readTorrentFile(os.Args[2])
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = discoverPeers(torrentFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+	case "handshake":
 		torrentFile, err := readTorrentFile(os.Args[2])
 
 		if err != nil {
@@ -377,18 +487,34 @@ func main() {
 			return
 
 		}
-		discoverPeers(torrentFile)
-	} else if command == "handshake" {
-		torrentFile, err := readTorrentFile(os.Args[2])
+		conn, err := connectToPeer(os.Args[3])
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		peerHandshake(conn, torrentFile.infoHash[:])
+
+	case "download_piece":
+		if len(os.Args) < 5 {
+			log.Fatalf("usage: %s %s -o piece_filename torrent_file piece_num\n", os.Args[0], command)
+		}
+
+		outputPath := os.Args[3]
+		torrentPath := os.Args[4]
+		pieceStr := os.Args[5]
+		piece, err := strconv.Atoi(pieceStr)
+		if err != nil {
+			log.Fatal(err)
+		}
 
 		if err != nil {
 			log.Fatal(err)
-			return
-
 		}
-		peerHandshake(torrentFile, os.Args[3])
-	} else {
-		fmt.Println("Unknown command: " + command)
-		os.Exit(1)
+		err = downloadPieces(torrentPath, outputPath, piece)
+		if err != nil {
+			log.Fatal(err)
+		}
+	default:
+		log.Fatal("Unknown command: " + command)
 	}
 }
